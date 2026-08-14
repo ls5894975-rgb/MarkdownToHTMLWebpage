@@ -1,0 +1,10 @@
+{
+  "description": "Create responsive HTML web pages in 16:9 format from Markdown content, ideal for users needing quick and professional web design solutions.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
