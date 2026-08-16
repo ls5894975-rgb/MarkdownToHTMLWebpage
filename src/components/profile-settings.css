@@ -1,0 +1,13 @@
+@media (max-width: 680px) {
+  .profile-settings-grid {
+    grid-template-columns: 1fr !important;
+  }
+
+  .profile-settings-input-row {
+    flex-direction: column;
+  }
+
+  .profile-settings-input-row > button {
+    min-height: 44px;
+  }
+}

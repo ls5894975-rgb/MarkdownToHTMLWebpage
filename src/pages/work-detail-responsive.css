@@ -1,0 +1,21 @@
+@media (max-width: 980px) {
+  .work-detail-layout {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 28px !important;
+  }
+
+  .work-detail-sidebar {
+    position: static !important;
+  }
+}
+
+@media (max-width: 620px) {
+  .work-detail-layout .work-ai-entry {
+    grid-template-columns: 46px minmax(0, 1fr) !important;
+  }
+
+  .work-detail-layout .work-ai-entry > button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}

@@ -1,73 +1,136 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
 import { CATEGORIES, WORKS, ARTISANS, ACTIVITIES } from '../data'
 import WorkCard from '../components/WorkCard'
+import { supabase } from '../lib/supabase'
+import './home-hero.css'
 
 const FILTERS = ['最新', '最热', '可定制']
 
 export default function HomePage() {
   const [filter, setFilter] = useState('最热')
+  const [categories, setCategories] = useState(CATEGORIES)
+  const [artisans, setArtisans] = useState(ARTISANS)
+  const [works, setWorks] = useState(WORKS)
+
+  useEffect(() => {
+    let active = true
+
+    supabase
+      .from('categories')
+      .select('id, name, artisan_count, work_count, image_url, color')
+      .order('sort_order')
+      .then(({ data }) => {
+        if (!active || !data?.length) return
+        setCategories(data.map(category => ({
+          id: category.id,
+          name: category.name,
+          count: category.artisan_count,
+          works: category.work_count,
+          img: category.image_url ?? '',
+          color: category.color ?? '#5A4A3A',
+        })))
+      })
+
+    supabase
+      .from('artisans')
+      .select('id, category_id, name, title, bio, quote, avatar_url, cover_url, years_experience, work_count, follower_count')
+      .order('sort_order')
+      .then(({ data }) => {
+        if (!active || !data?.length) return
+        setArtisans(data.map(artisan => ({
+          id: artisan.id,
+          name: artisan.name,
+          title: artisan.title,
+          years: artisan.years_experience,
+          works: artisan.work_count,
+          fans: artisan.follower_count,
+          quote: artisan.quote ?? '',
+          avatar: artisan.avatar_url ?? '',
+          cover: artisan.cover_url ?? '',
+          category: artisan.category_id ?? '',
+          links: {},
+          bio: artisan.bio ?? '',
+        })))
+      })
+
+    supabase
+      .from('works')
+      .select(`
+        id, title, category_id, image_url, image_height, price_text,
+        tags, likes_count, comments_count, description,
+        knowledge, ai_questions, hotspots,
+        artisan:artisans (
+          id, name, title, category_id, bio, quote, avatar_url,
+          cover_url, years_experience, work_count, follower_count
+        )
+      `)
+      .eq('status', 'published')
+      .order('created_at', { ascending: false })
+      .then(({ data }) => {
+        if (!active || !data?.length) return
+        setWorks(data.map(work => {
+          const artisan = work.artisan ?? null
+          return {
+            id: work.id,
+            title: work.title,
+            artisan: artisan ? {
+              id: artisan.id,
+              name: artisan.name,
+              title: artisan.title,
+              years: artisan.years_experience,
+              works: artisan.work_count,
+              fans: artisan.follower_count,
+              quote: artisan.quote ?? '',
+              avatar: artisan.avatar_url ?? '',
+              cover: artisan.cover_url ?? '',
+              category: artisan.category_id ?? '',
+              links: {},
+              bio: artisan.bio ?? '',
+            } : ARTISANS[0],
+            category: work.category_id ?? '',
+            img: work.image_url ?? '',
+            imgH: work.image_height,
+            likes: work.likes_count,
+            comments: work.comments_count,
+            tags: work.tags ?? [],
+            price: work.price_text ?? '面议',
+            desc: work.description ?? '',
+            knowledge: Array.isArray(work.knowledge) ? work.knowledge : [],
+            aiQuestions: work.ai_questions ?? [],
+            hotspots: Array.isArray(work.hotspots) ? work.hotspots : [],
+          }
+        }))
+      })
+
+    return () => {
+      active = false
+    }
+  }, [])
 
   const filteredWorks = filter === '可定制'
-    ? WORKS.filter(w => w.tags.includes('可定制'))
-    : [...WORKS].sort((a, b) => filter === '最热' ? b.likes - a.likes : b.id.localeCompare(a.id))
+    ? works.filter(w => w.tags.includes('可定制'))
+    : [...works].sort((a, b) => filter === '最热' ? b.likes - a.likes : b.id.localeCompare(a.id))
 
   return (
     <main>
       {/* Hero banner */}
-      <section style={{
-        background: 'linear-gradient(135deg, var(--ink) 0%, #2C3A30 60%, var(--qing) 100%)',
-        padding: '64px 0 72px',
-        position: 'relative', overflow: 'hidden',
-      }}>
-        <div style={{
-          position: 'absolute', inset: 0, opacity: 0.04,
-          backgroundImage: `url("data:image/svg+xml,%3Csvg width='80' height='80' viewBox='0 0 80 80' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='40' cy='40' r='30' fill='none' stroke='white' stroke-width='0.5'/%3E%3Ccircle cx='40' cy='40' r='20' fill='none' stroke='white' stroke-width='0.5'/%3E%3Cline x1='40' y1='10' x2='40' y2='70' stroke='white' stroke-width='0.3'/%3E%3Cline x1='10' y1='40' x2='70' y2='40' stroke='white' stroke-width='0.3'/%3E%3C/svg%3E")`,
-          backgroundSize: '80px 80px',
-        }} />
-        <div style={{ maxWidth: 1280, margin: '0 auto', padding: '0 32px', position: 'relative', zIndex: 1 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 48, alignItems: 'center' }}>
-            <div>
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: 'rgba(196,62,62,0.2)', border: '1px solid rgba(196,62,62,0.3)', borderRadius: 6, padding: '4px 12px', marginBottom: 20 }}>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--zhu-light)' }} />
-                <span style={{ fontFamily: "'Noto Sans SC'", fontSize: 12, color: 'rgba(255,255,255,0.8)', letterSpacing: '0.08em' }}>非遗匠心精选平台</span>
-              </div>
-              <h1 style={{ fontFamily: "'Noto Serif SC'", fontSize: 'clamp(28px, 3.5vw, 52px)', fontWeight: 900, color: 'white', lineHeight: 1.2, margin: '0 0 16px' }}>
-                与匠人同行<br />
-                <span style={{ color: 'var(--yue)' }}>守护非遗之美</span>
-              </h1>
-              <p style={{ fontFamily: "'Noto Sans SC'", fontSize: 15, color: 'rgba(255,255,255,0.55)', lineHeight: 1.8, margin: '0 0 32px', maxWidth: 420 }}>
-                连接非遗传承人与爱好者，让每一件匠心作品找到懂得它的人
-              </p>
-              <div style={{ display: 'flex', gap: 12 }}>
-                <Link to="/category/suzhou-embroidery" style={{
-                  padding: '12px 28px', borderRadius: 8, background: 'var(--zhu)', color: 'white',
-                  fontFamily: "'Noto Sans SC'", fontSize: 14, fontWeight: 600,
-                }}>
-                  探索作品
-                </Link>
-                <Link to="/artisan/zhang-wei" style={{
-                  padding: '12px 28px', borderRadius: 8, background: 'rgba(255,255,255,0.1)', color: 'white',
-                  fontFamily: "'Noto Sans SC'", fontSize: 14, border: '1px solid rgba(255,255,255,0.2)',
-                }}>
-                  认识匠人
-                </Link>
-              </div>
-            </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              {WORKS.slice(0, 4).map((w, i) => (
-                <Link key={w.id} to={`/work/${w.id}`} style={{ borderRadius: 10, overflow: 'hidden', background: '#2a2520', aspectRatio: i % 2 === 0 ? '3/4' : '4/3' }}>
-                  <img src={w.img} alt={w.title} style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: 0.85, transition: 'opacity 0.2s' }}
-                    onMouseEnter={e => (e.currentTarget as HTMLImageElement).style.opacity = '1'}
-                    onMouseLeave={e => (e.currentTarget as HTMLImageElement).style.opacity = '0.85'}
-                  />
-                </Link>
-              ))}
+      <section className="home-ink-hero">
+        <div className="home-hero-inner">
+          <div className="home-hero-copy">
+            <div className="home-hero-kicker">非遗匠心精选平台</div>
+            <h1 className="home-hero-title">
+              与匠人同行
+              <span>守护非遗之美</span>
+            </h1>
+            <p>连接非遗传承人与爱好者，在一针一线、一刀一刻之间，看见手艺的温度与流传的力量。</p>
+            <div className="home-hero-actions">
+              <Link className="home-hero-action primary" to="/categories">探索作品</Link>
+              <Link className="home-hero-action secondary" to="/artisans">认识匠人</Link>
             </div>
           </div>
         </div>
       </section>
-
       {/* Categories */}
       <section style={{ padding: '56px 0' }}>
         <div style={{ maxWidth: 1280, margin: '0 auto', padding: '0 32px' }}>
@@ -78,7 +141,7 @@ export default function HomePage() {
             </div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 12 }}>
-            {CATEGORIES.map(cat => (
+            {categories.map(cat => (
               <Link key={cat.id} to={`/category/${cat.id}`} style={{ display: 'block' }}>
                 <div style={{
                   borderRadius: 12, overflow: 'hidden', position: 'relative', aspectRatio: '3/4',
@@ -118,10 +181,10 @@ export default function HomePage() {
                 一针一线手工盘金绣，双面图案各不相同。正面白猫戏蝶，背面黑猫望月，历时半年精绣而成。
               </p>
               <div style={{ display: 'flex', alignItems: 'center', gap: 16, marginBottom: 28 }}>
-                <img src={ARTISANS[0].avatar} alt={ARTISANS[0].name} style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', border: '2px solid rgba(255,255,255,0.2)' }} />
+                <img src={artisans[0].avatar} alt={artisans[0].name} style={{ width: 40, height: 40, borderRadius: '50%', objectFit: 'cover', border: '2px solid rgba(255,255,255,0.2)' }} />
                 <div>
-                  <div style={{ fontFamily: "'Noto Serif SC'", fontSize: 14, fontWeight: 600, color: 'white' }}>{ARTISANS[0].name}</div>
-                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', fontFamily: "'Noto Sans SC'" }}>{ARTISANS[0].title}</div>
+                  <div style={{ fontFamily: "'Noto Serif SC'", fontSize: 14, fontWeight: 600, color: 'white' }}>{artisans[0].name}</div>
+                  <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', fontFamily: "'Noto Sans SC'" }}>{artisans[0].title}</div>
                 </div>
               </div>
               <Link to="/work/double-cat" style={{
@@ -134,7 +197,7 @@ export default function HomePage() {
               </Link>
             </div>
             <div style={{ position: 'relative', overflow: 'hidden' }}>
-              <img src={WORKS[0].img} alt="双面猫苏绣" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              <img src={works[0].img} alt="双面猫苏绣" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
               <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to right, var(--ink) 0%, transparent 30%)' }} />
             </div>
           </div>
@@ -172,7 +235,7 @@ export default function HomePage() {
         <div style={{ maxWidth: 1280, margin: '0 auto', padding: '0 32px' }}>
           <h2 style={{ fontFamily: "'Noto Serif SC'", fontSize: 24, fontWeight: 700, color: 'var(--ink)', margin: '0 0 28px' }}>匠人故事</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20 }}>
-            {ARTISANS.map(a => (
+            {artisans.map(a => (
               <Link key={a.id} to={`/artisan/${a.id}`} style={{ display: 'block' }}>
                 <div style={{
                   background: 'white', borderRadius: 14, overflow: 'hidden',

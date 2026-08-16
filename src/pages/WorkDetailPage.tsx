@@ -1,46 +1,205 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useParams, Link } from 'react-router'
-import { WORKS } from '../data'
+import { CATEGORIES, WORKS } from '../data'
+import { supabase } from '../lib/supabase'
+import { getWorkKnowledge, getWorkQuestions } from '../lib/workKnowledge'
+import WorkComments from '../components/WorkComments'
+import './work-detail-responsive.css'
 
-const AI_ANSWERS: Record<string, string> = {
-  '这件作品的工艺难点在哪？': '最大难点在于"双面绣"技法——在同一底料两面同时绣出形态不同的图案，且两面均整洁无痕。盘金绣部分需将金线按纹路盘曲，再以细线逐针订固，既要保持金线张力，又要确保图案流畅，极考验手眼配合。张蔚老师为此件作品耗时逾半年。',
-  '这个纹样有什么寓意？': '缠枝莲纹以莲花为主题，枝蔓缠绕、连绵不断，象征"生生不息、吉祥绵延"。莲花本身在中国文化中有"出淤泥而不染"的君子寓意，与猫的灵动形象相映成趣，整体寓意高洁、长寿与吉祥。',
-  '适合作为什么礼物？': '非常适合作为高端商务礼品、结婚贺礼或收藏馈赠。其独特的双面绣工艺赋予作品极高艺术价值与收藏价值，搭配作品数字身份证，更是一份有文化温度的珍贵馈赠。价格面议，可根据需求定制尺寸和图案。',
+const DEFAULT_AI_QUESTIONS = [
+  '这件作品最值得欣赏的细节是什么？',
+  '它使用了哪些传统技法？',
+  '日常应该如何保存和养护？',
+]
+
+type AiChatMessage = {
+  role: 'user' | 'assistant'
+  content: string
+}
+type Work = (typeof WORKS)[number]
+
+function withWorkKnowledge(work: Work): Work {
+  return {
+    ...work,
+    knowledge: getWorkKnowledge(work.category, work.title),
+    aiQuestions: getWorkQuestions(work.category),
+  }
+}
+
+const WORK_SELECT = `
+  id, title, category_id, image_url, image_height, price_text,
+  tags, likes_count, comments_count, description,
+  knowledge, ai_questions, hotspots,
+  artisan:artisans (
+    id, name, title, category_id, bio, quote, avatar_url,
+    cover_url, years_experience, work_count, follower_count
+  )
+`
+
+function mapDatabaseWork(row: any, fallback: Work): Work {
+  const artisan = row.artisan
+  const category = row.category_id ?? fallback.category
+  const title = row.title ?? fallback.title
+  return {
+    id: row.id,
+    title,
+    artisan: artisan ? {
+      id: artisan.id,
+      name: artisan.name,
+      title: artisan.title,
+      years: artisan.years_experience,
+      works: artisan.work_count,
+      fans: artisan.follower_count,
+      quote: artisan.quote ?? '',
+      avatar: artisan.avatar_url ?? '',
+      cover: artisan.cover_url ?? '',
+      category: artisan.category_id ?? '',
+      links: {},
+      bio: artisan.bio ?? '',
+    } : fallback.artisan,
+    category,
+    img: row.image_url ?? fallback.img,
+    imgH: row.image_height ?? fallback.imgH,
+    likes: row.likes_count ?? 0,
+    comments: row.comments_count ?? 0,
+    tags: row.tags ?? [],
+    price: row.price_text ?? '面议',
+    desc: row.description ?? '',
+    knowledge: getWorkKnowledge(category, title),
+    aiQuestions: getWorkQuestions(category),
+    hotspots: Array.isArray(row.hotspots) && row.hotspots.length ? row.hotspots : fallback.hotspots,
+  }
 }
 
 export default function WorkDetailPage() {
   const { id } = useParams()
-  const work = WORKS.find(w => w.id === id) || WORKS[0]
+  const initialWork = withWorkKnowledge(WORKS.find(w => w.id === id) || WORKS[0])
+  const [work, setWork] = useState<Work>(initialWork)
+  const [related, setRelated] = useState<Work[]>(() => WORKS.filter(w => w.id !== initialWork.id && w.category === initialWork.category).slice(0, 3).map(withWorkKnowledge))
   const [activeHotspot, setActiveHotspot] = useState<number | null>(null)
   const [openKnowledge, setOpenKnowledge] = useState<number | null>(null)
-  const [aiAnswer, setAiAnswer] = useState<string | null>(null)
+  const [aiDialogOpen, setAiDialogOpen] = useState(false)
+  const [aiInput, setAiInput] = useState('')
+  const [aiMessages, setAiMessages] = useState<AiChatMessage[]>([])
   const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState('')
   const [liked, setLiked] = useState(false)
   const [collected, setCollected] = useState(false)
 
-  const askAI = (q: string) => {
+  useEffect(() => {
+    let active = true
+    const fallback = withWorkKnowledge(WORKS.find(item => item.id === id) || WORKS[0])
+
+    setWork(fallback)
+    setRelated(WORKS.filter(item => item.id !== fallback.id && item.category === fallback.category).slice(0, 3).map(withWorkKnowledge))
+    setActiveHotspot(null)
+    setOpenKnowledge(null)
+    setAiDialogOpen(false)
+    setAiInput('')
+    setAiMessages([])
+    setAiError('')
+
+    const loadWork = async () => {
+      const { data } = await supabase
+        .from('works')
+        .select(WORK_SELECT)
+        .eq('id', id ?? fallback.id)
+        .eq('status', 'published')
+        .maybeSingle()
+
+      if (!active || !data) return
+      const databaseWork = mapDatabaseWork(data, fallback)
+      setWork(databaseWork)
+
+      const { data: relatedRows } = await supabase
+        .from('works')
+        .select(WORK_SELECT)
+        .eq('status', 'published')
+        .eq('category_id', databaseWork.category)
+        .neq('id', databaseWork.id)
+        .limit(3)
+
+      if (!active || !relatedRows?.length) return
+      setRelated(relatedRows.map(row => {
+        const relatedFallback = WORKS.find(item => item.id === row.id) || fallback
+        return mapDatabaseWork(row, relatedFallback)
+      }))
+    }
+
+    void loadWork()
+    return () => {
+      active = false
+    }
+  }, [id])
+
+  const askAI = async (questionOverride?: string) => {
+    const question = (questionOverride ?? aiInput).trim()
+    if (!question || aiLoading) return
+
+    const greeting: AiChatMessage = {
+      role: 'assistant',
+      content: `你好，我是 AI 小传。你可以问我关于“${work.title}”的工艺、纹样寓意、鉴赏或养护问题。`,
+    }
+    const history = aiMessages.length > 0 ? aiMessages : [greeting]
+    setAiDialogOpen(true)
+    setAiMessages([...history, { role: 'user', content: question }])
+    setAiInput('')
+    setAiError('')
     setAiLoading(true)
-    setAiAnswer(null)
-    setTimeout(() => {
-      setAiAnswer(AI_ANSWERS[q] || '这是一件精美的非遗作品，承载着传承人数十年的匠心积淀。')
+
+    try {
+      const { data, error } = await supabase.functions.invoke('doubao-guide', {
+        body: {
+          question,
+          history,
+          work: {
+            title: work.title,
+            category: work.category,
+            description: work.desc,
+            tags: work.tags,
+            artisanName: work.artisan.name,
+            artisanTitle: work.artisan.title,
+            knowledge: work.knowledge,
+          },
+        },
+      })
+      if (error) throw error
+      const answer = data?.text?.trim()
+      if (!answer) throw new Error('AI 小传没有返回有效回答。')
+      setAiMessages(current => [...current, { role: 'assistant', content: answer }])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '提问失败，请稍后重试。'
+      setAiError(message)
+      setAiMessages(current => [...current, { role: 'assistant', content: '抱歉，我暂时没有回答成功。请稍后再试，或换一个问题。' }])
+    } finally {
       setAiLoading(false)
-    }, 800)
+    }
   }
 
-  const related = WORKS.filter(w => w.id !== work.id && w.category === work.category).slice(0, 3)
+  const openAiDialog = () => {
+    if (aiMessages.length === 0) {
+      setAiMessages([{
+        role: 'assistant',
+        content: `你好，我是 AI 小传。你可以问我关于“${work.title}”的工艺、纹样寓意、鉴赏或养护问题。`,
+      }])
+    }
+    setAiError('')
+    setAiDialogOpen(true)
+  }
 
+  const suggestedQuestions = work.aiQuestions.length > 0 ? work.aiQuestions : DEFAULT_AI_QUESTIONS
   return (
     <main style={{ maxWidth: 1280, margin: '0 auto', padding: '40px 32px 80px' }}>
       {/* Breadcrumb */}
       <div style={{ fontSize: 12, color: 'var(--text-light)', fontFamily: "'Noto Sans SC'", marginBottom: 24 }}>
-        <Link to="/" style={{ color: 'var(--text-light)' }}>首页</Link>
+        <Link to="/home" style={{ color: 'var(--text-light)' }}>首页</Link>
         {' / '}
-        <Link to={`/category/${work.category}`} style={{ color: 'var(--text-light)' }}>苏绣</Link>
+        <Link to={`/category/${work.category}`} style={{ color: 'var(--text-light)' }}>{CATEGORIES.find(item => item.id === work.category)?.name ?? '非遗品类'}</Link>
         {' / '}
         <span style={{ color: 'var(--text)' }}>{work.title}</span>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 420px', gap: 48, alignItems: 'start' }}>
+      <div className="work-detail-layout" style={{ display: 'grid', gridTemplateColumns: '1fr 420px', gap: 48, alignItems: 'start' }}>
         {/* Left: image + knowledge + AI + comments */}
         <div>
           {/* Main image with hotspots */}
@@ -110,75 +269,22 @@ export default function WorkDetailPage() {
             </div>
           )}
 
-          {/* AI Q&A */}
-          {work.aiQuestions.length > 0 && (
-            <div style={{ marginBottom: 32 }}>
-              <h3 style={{ fontFamily: "'Noto Serif SC'", fontSize: 18, fontWeight: 700, color: 'var(--ink)', margin: '0 0 16px' }}>
-                🤖 问问 AI 小传
-              </h3>
-              <div style={{ background: 'white', borderRadius: 12, border: '1px solid var(--border)', padding: '20px' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: aiAnswer || aiLoading ? 16 : 0 }}>
-                  {work.aiQuestions.map(q => (
-                    <button key={q} onClick={() => askAI(q)} style={{
-                      padding: '10px 14px', borderRadius: 7, border: '1px solid var(--border)',
-                      background: 'var(--mi)', fontFamily: "'Noto Sans SC'", fontSize: 13, color: 'var(--text)',
-                      textAlign: 'left', cursor: 'pointer', transition: 'all 0.15s',
-                      display: 'flex', alignItems: 'center', gap: 8,
-                    }}
-                      onMouseEnter={e => (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--zhu-light)'}
-                      onMouseLeave={e => (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)'}
-                    >
-                      <span style={{ color: 'var(--text-light)' }}>▸</span> {q}
-                    </button>
-                  ))}
-                </div>
-                {aiLoading && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '12px 0' }}>
-                    <div style={{ display: 'flex', gap: 4 }}>
-                      {[0, 1, 2].map(i => (
-                        <div key={i} style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--zhu)', opacity: 0.6, animation: `pulse ${0.8 + i * 0.2}s ease-in-out infinite alternate` }} />
-                      ))}
-                    </div>
-                    <span style={{ fontSize: 13, color: 'var(--text-light)', fontFamily: "'Noto Sans SC'" }}>AI 小传正在思考…</span>
-                  </div>
-                )}
-                {aiAnswer && (
-                  <div style={{ background: 'rgba(196,62,62,0.04)', border: '1px solid rgba(196,62,62,0.1)', borderRadius: 8, padding: '14px 16px' }}>
-                    <p style={{ fontFamily: "'Noto Sans SC'", fontSize: 13, color: 'var(--text)', lineHeight: 1.9, margin: 0 }}>{aiAnswer}</p>
-                  </div>
-                )}
-              </div>
+          {/* AI 小传对话入口 */}
+          <div className="work-ai-entry">
+            <div className="work-ai-entry-mark">问</div>
+            <div>
+              <span>AI 小传 · 非遗随身讲解</span>
+              <h3>想了解这件作品？直接问我</h3>
+              <p>工艺难点、纹样寓意、收藏养护，都可以继续追问。</p>
             </div>
-          )}
-
-          {/* Comments */}
-          <div>
-            <h3 style={{ fontFamily: "'Noto Serif SC'", fontSize: 18, fontWeight: 700, color: 'var(--ink)', margin: '0 0 16px' }}>
-              💬 评论区（{work.comments}条）
-            </h3>
-            {[
-              { user: '莫小云', text: '张老师的双面绣真的太绝了，两面图案完全不同，正面白猫活灵活现！', time: '2天前' },
-              { user: '王一尘', text: '盘金绣的工艺细节看得我目瞪口呆，这得多少年的功力才能绣出这种效果？', time: '5天前' },
-              { user: '李雨桐', text: '已经预约了定制，期待自己的那一件！', time: '1周前' },
-            ].map((c, i) => (
-              <div key={i} style={{ display: 'flex', gap: 12, padding: '14px 0', borderBottom: '1px solid var(--border)' }}>
-                <div style={{ width: 36, height: 36, borderRadius: '50%', background: ['#C43E3E', '#2C5F6D', '#5A4A2A'][i], display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <span style={{ color: 'white', fontSize: 12, fontFamily: "'Noto Serif SC'", fontWeight: 700 }}>{c.user[0]}</span>
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 6 }}>
-                    <span style={{ fontFamily: "'Noto Sans SC'", fontSize: 13, fontWeight: 600, color: 'var(--ink)' }}>{c.user}</span>
-                    <span style={{ fontSize: 11, color: 'var(--text-light)', fontFamily: "'Noto Sans SC'" }}>{c.time}</span>
-                  </div>
-                  <p style={{ fontFamily: "'Noto Sans SC'", fontSize: 13, color: 'var(--text-mid)', lineHeight: 1.7, margin: 0 }}>{c.text}</p>
-                </div>
-              </div>
-            ))}
+            <button type="button" onClick={openAiDialog}>打开对话框 →</button>
           </div>
+          {/* Comments */}
+          <WorkComments workId={work.id} />
         </div>
 
         {/* Right: info + CTA */}
-        <div style={{ position: 'sticky', top: 80 }}>
+        <div className="work-detail-sidebar" style={{ position: 'sticky', top: 80 }}>
           <div style={{ background: 'white', borderRadius: 16, border: '1px solid var(--border)', overflow: 'hidden', marginBottom: 16 }}>
             <div style={{ padding: '24px 24px 20px' }}>
               <h1 style={{ fontFamily: "'Noto Serif SC'", fontSize: 24, fontWeight: 700, color: 'var(--ink)', margin: '0 0 8px', lineHeight: 1.3 }}>{work.title}</h1>
@@ -233,7 +339,7 @@ export default function WorkDetailPage() {
                 🎨 咨询定制
               </Link>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <Link to="/book" style={{
+                <Link to={`/book/${work.artisan.id}`} style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                   padding: '11px', borderRadius: 8, background: 'var(--mi)', border: '1px solid var(--border)',
                   fontFamily: "'Noto Sans SC'", fontSize: 13, color: 'var(--text)',
@@ -263,6 +369,63 @@ export default function WorkDetailPage() {
           )}
         </div>
       </div>
+      {aiDialogOpen && (
+        <div className="work-ai-backdrop" role="presentation" onClick={() => setAiDialogOpen(false)}>
+          <section className="work-ai-dialog" role="dialog" aria-modal="true" aria-labelledby="work-ai-dialog-title" onClick={event => event.stopPropagation()}>
+            <header>
+              <div className="work-ai-dialog-avatar">传</div>
+              <div>
+                <span>满小传 · AI 非遗讲解</span>
+                <h2 id="work-ai-dialog-title">问问 AI 小传</h2>
+                <small>正在讲解：{work.title}</small>
+              </div>
+              <button type="button" onClick={() => setAiDialogOpen(false)} aria-label="关闭 AI 小传">×</button>
+            </header>
+
+            <div className="work-ai-messages" aria-live="polite">
+              {aiMessages.map((message, index) => (
+                <div key={`${message.role}-${index}`} className={`work-ai-message ${message.role}`}>
+                  {message.role === 'assistant' && <i>传</i>}
+                  <p>{message.content}</p>
+                </div>
+              ))}
+              {aiLoading && (
+                <div className="work-ai-message assistant thinking">
+                  <i>传</i><p><span /><span /><span /> AI 小传正在查阅作品资料…</p>
+                </div>
+              )}
+            </div>
+
+            <form className="work-ai-composer" onSubmit={event => { event.preventDefault(); void askAI() }}>
+              {aiError && <div className="work-ai-error" role="alert">{aiError}</div>}
+              <div>
+                <textarea
+                  value={aiInput}
+                  onChange={event => setAiInput(event.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      void askAI()
+                    }
+                  }}
+                  placeholder="输入你想了解的问题…"
+                  aria-label="输入问题"
+                  maxLength={500}
+                />
+                <button type="submit" disabled={!aiInput.trim() || aiLoading}>发送</button>
+              </div>
+              <section className="work-ai-suggestions" aria-label="推荐问题">
+                <span>可以这样问</span>
+                <div>
+                  {suggestedQuestions.slice(0, 4).map(question => (
+                    <button key={question} type="button" disabled={aiLoading} onClick={() => void askAI(question)}>{question}</button>
+                  ))}
+                </div>
+              </section>
+            </form>
+          </section>
+        </div>
+      )}
     </main>
   )
 }

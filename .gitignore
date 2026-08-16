@@ -11,3 +11,6 @@ logs/
 *.log
 .claude-replay.*
 .tmp-*
+.vercel
+supabase/.temp/
+public/**/*.mp4
